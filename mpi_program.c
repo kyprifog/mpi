@@ -38,42 +38,38 @@ int main(int argc, char** argv) {
 
     // Calculate the chunk size and start/end offsets for each process
     MPI_Offset chunkSize = fileSize / size;
-    MPI_Offset remaining = fileSize % size;
     MPI_Offset startOffset = rank * chunkSize;
     MPI_Offset endOffset = startOffset + chunkSize;
 
-    // Adjust the end offset for the last process to account for the remaining portion
+    // Adjust the end offset for the last process to account for any remaining portion
     if (rank == size - 1) {
-        endOffset += remaining;
+        endOffset = fileSize;
     }
 
-    // Move the file pointer to the starting position of each process
-    MPI_File_seek(file, startOffset, MPI_SEEK_SET);
+    // Determine the size of the local buffer for each process
+    MPI_Offset localBufferSize = endOffset - startOffset;
+    char* localBuffer = (char*)malloc((localBufferSize + 1) * sizeof(char));
 
-    // Read the assigned portion of the file into a local buffer
-    char* buffer = (char*)malloc((endOffset - startOffset + 1) * sizeof(char));
-    MPI_File_read(file, buffer, endOffset - startOffset, MPI_CHAR, &status);
-    buffer[endOffset - startOffset] = '\0'; // Null-terminate the buffer
+    // Set the shared file pointer to the start offset for each process
+    MPI_File_set_view(file, startOffset, MPI_CHAR, MPI_CHAR, "native", MPI_INFO_NULL);
 
-    // Count words in the assigned portion of the file
+    // Read the local chunk of the file into the local buffer
+    MPI_File_read(file, localBuffer, localBufferSize, MPI_CHAR, &status);
+    localBuffer[localBufferSize] = '\0'; // Null-terminate the buffer
+
+    // Count words in the local chunk of the file
     char* delimiters = " \t\n\r\f\v"; // Space, tab, newline, carriage return, form feed, vertical tab
-    char* token = strtok(buffer, delimiters);
+    char* token = strtok(localBuffer, delimiters);
     while (token != NULL) {
         localCount++;
         token = strtok(NULL, delimiters);
     }
 
-    free(buffer);
+    free(localBuffer);
     MPI_File_close(&file);
 
     // Perform reduction to get partial word counts on each process
-    int* counts = (int*)malloc(size * sizeof(int));
-    MPI_Allgather(&localCount, 1, MPI_INT, counts, 1, MPI_INT, MPI_COMM_WORLD);
-
-    // Compute the global word count by summing the partial counts
-    for (int i = 0; i < size; i++) {
-        globalCount += counts[i];
-    }
+    MPI_Reduce(&localCount, &globalCount, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
     // Synchronize all processes before printing the final count
     MPI_Barrier(MPI_COMM_WORLD);
@@ -83,7 +79,6 @@ int main(int argc, char** argv) {
         printf("Total word count: %d\n", globalCount);
     }
 
-    free(counts);
     MPI_Finalize();
     return 0;
 }
